@@ -1,0 +1,78 @@
+# Build the first-class GitHub release archive from the matching dsh tag.
+# npm publication remains an explicit, separate workflow; this workflow only
+# creates the GitHub Release and attaches the verified build output.
+name: GitHub Release (dsh)
+
+on:
+  push:
+    tags:
+      - 'dsh-v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: github-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PRIMARY_NODE_VERSION: '24'
+  DSH_TELEMETRY_DISABLED: '1'
+
+jobs:
+  release:
+    name: Build and publish GitHub Release
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v5.0.0
+
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: ${{ env.PRIMARY_NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install (immutable)
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify release tag and package versions
+        env:
+          RELEASE_PUBLISH: 'true'
+        run: pnpm run release:verify --family dsh
+
+      - name: Build official artifacts
+        run: pnpm run build:official
+
+      - name: Pack npm release artifacts
+        run: pnpm run release:pack --family dsh --out dist/npm --concurrency 8
+
+      - name: Create release archive and checksum
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          archive="dist/${RELEASE_TAG}-npm.tar.gz"
+          tar -czf "$archive" -C dist/npm .
+          sha256sum "$archive" > "${archive}.sha256"
+
+      - name: Create or update GitHub Release
+        env:
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          archive="dist/${RELEASE_TAG}-npm.tar.gz"
+          checksum="${archive}.sha256"
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "$archive" "$checksum" --clobber
+            exit 0
+          fi
+
+          release_args=(--verify-tag --title "$RELEASE_TAG" --generate-notes)
+          if [[ "$RELEASE_TAG" == *-* ]]; then
+            release_args+=(--prerelease)
+          fi
+          gh release create "$RELEASE_TAG" "${release_args[@]}" "$archive" "$checksum"
