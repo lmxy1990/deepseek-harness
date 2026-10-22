@@ -160,6 +160,25 @@ The credential-free dsh dependency-layout and dsh/vendor pack rehearsals use the
 
 The root [contributor instructions](../AGENTS.md#commands) summarize common commands, while [`package.json`](../package.json) and [scripts/run-gates.ts](../scripts/run-gates.ts) own the current script and gate inventories. Select the smallest checks that cover the changed surface. Documentation changes use `pnpm run doc-sync`; package-public behavior changes also update the owning README or JSDoc, and built-artifact checks require `pnpm run build` first.
 
+### Release builds
+
+The build entry is [`scripts/build.ts`](../scripts/build.ts), exposed through [`package.json`](../package.json). The [GitHub release workflow](../.github/workflows/github-release.yml) checks out the release tag, builds signed and notarized Desktop installers on the registered Windows and macOS runners, creates `SHA256SUMS`, and uploads the installers and their supporting update files to the GitHub Release. GitHub's automatic source archives are not the release installers.
+
+The tag must point at the commit being released. For a new version, bump and push the version commit, create and push the tag, and wait for the workflow to finish:
+
+```sh
+pnpm run release:dsh patch
+git push origin master
+git tag -a dsh-v<version> -m "Release dsh-v<version>"
+git push origin dsh-v<version>
+```
+
+For a retry, open **Actions → GitHub Release (Desktop installers) → Run workflow**, enter the existing `dsh-v<version>` tag, and let GitHub rebuild the installers before replacing the Release assets. The Windows artifact is an `.exe`; macOS artifacts are a `.dmg` and `.zip`.
+
+```sh
+gh run list --workflow github-release.yml
+```
+
 ### Profile runs
 
 Run the repository build separately before using these source-checkout demos:

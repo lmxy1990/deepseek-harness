@@ -1,78 +1,190 @@
-# Build the first-class GitHub release archive from the matching dsh tag.
-# npm publication remains an explicit, separate workflow; this workflow only
-# creates the GitHub Release and attaches the verified build output.
-name: GitHub Release (dsh)
+# Build signed Desktop installers from the release tag and attach them to the
+# GitHub Release. npm publication remains a separate, explicit workflow.
+name: GitHub Release (Desktop installers)
 
 on:
   push:
     tags:
       - 'dsh-v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing dsh-v* tag to build and publish
+        required: true
+        type: string
 
 permissions:
   contents: write
 
 concurrency:
-  group: github-release-${{ github.ref }}
+  group: github-release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 env:
-  PRIMARY_NODE_VERSION: '24'
   DSH_TELEMETRY_DISABLED: '1'
 
 jobs:
-  release:
-    name: Build and publish GitHub Release
+  resolve:
+    name: Resolve release tag
     runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      channel: ${{ steps.release.outputs.channel }}
+    steps:
+      - name: Validate release tag
+        id: release
+        env:
+          REQUESTED_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: |
+          if [[ ! "$REQUESTED_TAG" =~ ^dsh-v[0-9][0-9A-Za-z.-]*$ ]]; then
+            echo "Expected a dsh-v* tag, got $REQUESTED_TAG" >&2
+            exit 1
+          fi
+          channel=latest
+          [[ "$REQUESTED_TAG" == *-* ]] && channel=nightly
+          echo "tag=$REQUESTED_TAG" >> "$GITHUB_OUTPUT"
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+
+  windows:
+    name: Build Windows x64 installer
+    needs: resolve
+    runs-on: dsh-win-package-trial
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      PACKAGE_SOURCE_REF: ${{ needs.resolve.outputs.tag }}
+      PACKAGE_VERSION_MODE: product
+      DSH_DESKTOP_UPDATE_CHANNEL: ${{ needs.resolve.outputs.channel }}
+      DSH_PACKAGING_PRESET: production
+      PACKAGE_SIGNING: signed
     steps:
       - uses: actions/checkout@v7.0.1
         with:
+          ref: ${{ needs.resolve.outputs.tag }}
           fetch-depth: 0
           persist-credentials: false
-
+      - name: Verify tag matches checkout version
+        run: >-
+          node -e "const fs=require('node:fs'); const cp=require('node:child_process');
+          const ref=process.env.PACKAGE_SOURCE_REF; const v=JSON.parse(fs.readFileSync('package.json','utf8')).version;
+          if(ref!=='dsh-v'+v) throw Error('Release tag does not match package version');
+          const tagged=cp.execFileSync('git',['rev-parse','--verify','refs/tags/'+ref+'^{commit}'],{encoding:'utf8'}).trim();
+          const head=cp.execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim();
+          if(tagged!==head) throw Error('Checkout does not match release tag');"
       - uses: pnpm/action-setup@v5.0.0
-
       - uses: actions/setup-node@v7.0.0
         with:
-          node-version: ${{ env.PRIMARY_NODE_VERSION }}
-          cache: pnpm
-
-      - name: Install (immutable)
+          node-version: '24'
+      - name: Install locked dependencies
         run: pnpm install --frozen-lockfile
-
-      - name: Verify release tag and package versions
+      - name: Resolve production package version
+        id: settings
+        run: node apps/desktop/scripts/prepare-windows-ci.mjs
+      - name: Check packaging configuration and toolchain
         env:
-          RELEASE_PUBLISH: 'true'
-        run: pnpm run release:verify --family dsh
-
-      - name: Build official artifacts
-        run: pnpm run build:official
-
-      - name: Pack npm release artifacts
-        run: pnpm run release:pack --family dsh --out dist/npm --concurrency 8
-
-      - name: Create release archive and checksum
+          PACKAGE_VERSION: ${{ steps.settings.outputs.version }}
+        run: pnpm run package:desktop:win:x64 --check --build-version $env:PACKAGE_VERSION
+      - name: Build and verify signed installer
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
+          PACKAGE_VERSION: ${{ steps.settings.outputs.version }}
+        run: pnpm run package:desktop:win:x64 --build-version $env:PACKAGE_VERSION
+      - name: Stage Windows release assets
         run: |
-          archive="dist/${RELEASE_TAG}-npm.tar.gz"
-          tar -czf "$archive" -C dist/npm .
-          sha256sum "$archive" > "${archive}.sha256"
+          New-Item -ItemType Directory -Force dist/release-assets | Out-Null
+          Get-ChildItem apps/desktop/.desktop-build/targets/win-x64/artifacts -File | Copy-Item -Destination dist/release-assets
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: desktop-windows-${{ needs.resolve.outputs.tag }}
+          path: dist/release-assets/*
+          if-no-files-found: error
+          retention-days: 7
 
+  macos:
+    name: Build macOS arm64 installer
+    needs: resolve
+    runs-on: [self-hosted, macOS, ARM64, dsh-mac-package-trial]
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: bash
+    env:
+      PACKAGE_SOURCE_REF: ${{ needs.resolve.outputs.tag }}
+      PACKAGE_VERSION_MODE: product
+      DSH_DESKTOP_UPDATE_CHANNEL: ${{ needs.resolve.outputs.channel }}
+      DSH_PACKAGING_PRESET: production
+      PACKAGE_SKIP_NOTARIZATION: 'false'
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ needs.resolve.outputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify tag matches checkout version
+        run: >-
+          node -e "const fs=require('node:fs'); const cp=require('node:child_process');
+          const ref=process.env.PACKAGE_SOURCE_REF; const v=JSON.parse(fs.readFileSync('package.json','utf8')).version;
+          if(ref!=='dsh-v'+v) throw Error('Release tag does not match package version');
+          const tagged=cp.execFileSync('git',['rev-parse','--verify','refs/tags/'+ref+'^{commit}'],{encoding:'utf8'}).trim();
+          const head=cp.execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim();
+          if(tagged!==head) throw Error('Checkout does not match release tag');"
+      - uses: pnpm/action-setup@v5.0.0
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: '24'
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Resolve production package version
+        id: settings
+        run: node apps/desktop/scripts/prepare-macos-ci.mjs
+      - name: Check packaging configuration and toolchain
+        env:
+          PACKAGE_VERSION: ${{ steps.settings.outputs.version }}
+        run: pnpm run package:desktop:mac:arm64 --check --build-version "$PACKAGE_VERSION"
+      - name: Build and verify notarized installer
+        env:
+          PACKAGE_VERSION: ${{ steps.settings.outputs.version }}
+        run: pnpm run package:desktop:mac:arm64 --build-version "$PACKAGE_VERSION"
+      - name: Stage macOS release assets
+        run: |
+          mkdir -p dist/release-assets
+          find apps/desktop/.desktop-build/targets/mac-arm64/artifacts -maxdepth 1 -type f -exec cp {} dist/release-assets/ \;
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: desktop-macos-${{ needs.resolve.outputs.tag }}
+          path: dist/release-assets/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish installers to GitHub Release
+    needs: [resolve, windows, macos]
+    runs-on: ubuntu-24.04
+    env:
+      RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/download-artifact@v8.0.1
+        with:
+          pattern: desktop-*-${{ needs.resolve.outputs.tag }}
+          path: dist/release-assets
+          merge-multiple: true
+      - name: Create checksums
+        run: |
+          cd dist/release-assets
+          find . -maxdepth 1 -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
       - name: Create or update GitHub Release
-        env:
-          GH_REPO: ${{ github.repository }}
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          archive="dist/${RELEASE_TAG}-npm.tar.gz"
-          checksum="${archive}.sha256"
+          mapfile -t assets < <(find dist/release-assets -maxdepth 1 -type f -print | sort)
+          if [[ "${#assets[@]}" -eq 0 ]]; then
+            echo 'No installer assets were produced' >&2
+            exit 1
+          fi
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release upload "$RELEASE_TAG" "$archive" "$checksum" --clobber
+            gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
             exit 0
           fi
-
           release_args=(--verify-tag --title "$RELEASE_TAG" --generate-notes)
-          if [[ "$RELEASE_TAG" == *-* ]]; then
-            release_args+=(--prerelease)
-          fi
-          gh release create "$RELEASE_TAG" "${release_args[@]}" "$archive" "$checksum"
+          [[ "$RELEASE_TAG" == *-* ]] && release_args+=(--prerelease)
+          gh release create "$RELEASE_TAG" "${release_args[@]}" "${assets[@]}"

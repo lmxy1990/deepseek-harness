@@ -165,6 +165,25 @@ keyless [CI 工作流](../.github/workflows/ci.yml) 将独立门禁分组到若�
 
 根目录的[贡献者说明](../AGENTS.md#commands)概述常用命令，[`package.json`](../package.json) 与 [scripts/run-gates.ts](../scripts/run-gates.ts) 则负责当前脚本和门禁清单。请选择覆盖变更表面的最小检查集。文档变更使用 `pnpm run doc-sync`；包公开行为变更还需更新所属 README 或 JSDoc，而基于构建产物的检查需要先运行 `pnpm run build`。
 
+### 发布构建
+
+构建入口是 [`scripts/build.ts`](../scripts/build.ts)，由 [`package.json`](../package.json) 暴露。[GitHub 发布工作流](../.github/workflows/github-release.yml)会 checkout 发布 tag，在已注册的 Windows 和 macOS runner 上构建带签名和公证的 Desktop 安装包，生成 `SHA256SUMS`，并将安装包及其更新辅助文件上传到 GitHub Release。GitHub 自动生成的源码归档不是发布安装包。
+
+tag 必须指向待发布的提交。发布新版本时，先更新并推送版本提交，再创建并推送 tag，等待工作流完成：
+
+```sh
+pnpm run release:dsh patch
+git push origin master
+git tag -a dsh-v<version> -m "Release dsh-v<version>"
+git push origin dsh-v<version>
+```
+
+重试时，打开 **Actions → GitHub Release (Desktop installers) → Run workflow**，填写已有的 `dsh-v<version>` tag，让 GitHub 重新构建安装包后替换 Release 产物。Windows 产物是 `.exe`；macOS 产物是 `.dmg` 和 `.zip`。
+
+```sh
+gh run list --workflow github-release.yml
+```
+
 ### Profile 运行
 
 从源码 checkout 运行这些演示前，请单独执行仓库构建：
