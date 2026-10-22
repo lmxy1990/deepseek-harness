@@ -169,6 +169,8 @@ keyless [CI 工作流](../.github/workflows/ci.yml) 将独立门禁分组到若�
 
 构建入口是 [`scripts/build.ts`](../scripts/build.ts)，由 [`package.json`](../package.json) 暴露。[GitHub 发布工作流](../.github/workflows/github-release.yml)会 checkout 发布 tag，在已注册的 Windows 和 macOS runner 上构建带签名和公证的 Desktop 安装包，生成 `SHA256SUMS`，并将安装包及其更新辅助文件上传到 GitHub Release。GitHub 自动生成的源码归档不是发布安装包。
 
+两个打包 job 使用仓库自有的 `dsh-win-package-trial` Windows runner 和 `[self-hosted, macOS, ARM64, dsh-mac-package-trial]` runner。任一 runner 离线时，工作流会保持排队，发布 job 不会开始。触发发布前请确保两个 runner 在线；托管 Ubuntu 只负责校验 tag 和上传已完成的产物。
+
 tag 必须指向待发布的提交。发布新版本时，先更新并推送版本提交，再创建并推送 tag，等待工作流完成：
 
 ```sh

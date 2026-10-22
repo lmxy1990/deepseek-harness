@@ -164,6 +164,8 @@ The root [contributor instructions](../AGENTS.md#commands) summarize common comm
 
 The build entry is [`scripts/build.ts`](../scripts/build.ts), exposed through [`package.json`](../package.json). The [GitHub release workflow](../.github/workflows/github-release.yml) checks out the release tag, builds signed and notarized Desktop installers on the registered Windows and macOS runners, creates `SHA256SUMS`, and uploads the installers and their supporting update files to the GitHub Release. GitHub's automatic source archives are not the release installers.
 
+The two packaging jobs use the repository-owned `dsh-win-package-trial` Windows runner and `[self-hosted, macOS, ARM64, dsh-mac-package-trial]` runner. If either runner is offline, the workflow remains queued and the publish job does not start. Bring both runners online before dispatching a release; hosted Ubuntu only validates the tag and uploads the completed assets.
+
 The tag must point at the commit being released. For a new version, bump and push the version commit, create and push the tag, and wait for the workflow to finish:
 
 ```sh
