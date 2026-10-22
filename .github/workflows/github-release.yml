@@ -182,6 +182,9 @@ jobs:
             exit 1
           fi
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            while IFS= read -r old_asset; do
+              [[ -z "$old_asset" ]] || gh release delete-asset "$RELEASE_TAG" "$old_asset" --yes
+            done < <(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' | grep -E -- '-npm\.tar\.gz(\.sha256)?$' || true)
             gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
             exit 0
           fi
